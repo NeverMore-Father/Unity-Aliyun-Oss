@@ -1,0 +1,95 @@
+using Assets.House.Scripts.Utils.AliyunOss;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class OssSample : MonoBehaviour
+{
+
+    Oss _oss;
+    public string FilePath;
+    public string FolderPath;
+    public Text MsgText;
+
+    // Use this for initialization
+    void Start()
+    {
+        _oss = gameObject.AddComponent<Oss>();
+        _oss.ConfigAccessKeyId(OssConfig.AccessKeyId)
+            .ConfigAccessKeySecret(OssConfig.AccessKeySecret)
+            .ConfigBucket(OssConfig.Bucket)
+            .ConfigEndpoint(OssConfig.Endpoint);
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        gameObject.transform.Rotate(Vector3.up, 1);
+
+        if (Input.GetKeyDown(KeyCode.T))
+        {
+            UploadOneFile();
+        }
+
+        if (Input.GetKeyDown(KeyCode.S))
+        {
+            UploadFolder();
+        }
+    }
+
+    void UploadOneFile()
+    {
+        _oss.UploadFile(FilePath, "wfq/onefile", (info) =>
+        {
+            switch (info.Event)
+            {
+                case UploadFileEvent.Error:
+                    Debug.Log("上传失败 : " + info.ErrorMsg);
+                    break;
+                case UploadFileEvent.Suc:
+                    Debug.Log("上传成功");
+                    break;
+                case UploadFileEvent.Processing:
+                    Debug.Log("上传进度 [" + info.GetProcess() + "%s]");
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+
+    void UploadFolder()
+    {
+        List<string> remoteKeys = new List<string>();
+        string[] files = Directory.GetFiles(FolderPath);
+        foreach (string file in files)
+        {
+            remoteKeys.Add("wfq/mulfiles");
+        }
+        _oss.MultipleUploadFiles(files.ToList(), remoteKeys, (info) => {
+            switch (info.Event)
+            {
+                case MultipleUploadFileEvent.Error:
+                    Debug.Log("上传发生错误");
+                    break;
+                case MultipleUploadFileEvent.Suc:
+                    Debug.Log("上传成功");
+                    break;
+                case MultipleUploadFileEvent.Processing:
+                    var msg = "当前上传文件" + info.UploadFileInfo.File + "[" + info.UploadFileInfo.GetProcess() + "%]";
+                    //Debug.Log(msg);
+                    var msg2 = "当前上传文件数量" + info.UploadedFiles.Count + "失败数量 " + info.ErrorFiles.Count + " 总数量" + info.TotalFiles.Count;
+                    //Debug.Log(msg2);
+                    var msg3 = "字节总进度 " + info.GetSizeProcess() + " 文件总进度 " + info.GetFileCountProcess();
+                    MsgText.text = msg + "\n" + msg2 + "\n" + msg3;
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+
+}
