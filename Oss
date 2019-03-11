@@ -1,0 +1,389 @@
+using Aliyun.OSS;
+using BestHTTP;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace Assets.House.Scripts.Utils.AliyunOss
+{
+    public enum UploadFileEvent
+    {
+        Error,
+        Suc,
+        Processing
+    }
+
+    public class UploadFileInfo
+    {
+        public HTTPRequest OriginalRequest;
+        public string File;//当前上传的文件
+        public string RemoteKey;//上传相对于bucket的路径
+        public string DownLoadUrl;//文件的下载路径
+        public long Uploaded;
+        public long UploadLength;
+        public Exception Error;
+        public string ErrorMsg;
+        public UploadFileEvent Event;
+        public string GetProcess()
+        {
+            return Math.Round(Uploaded * 100f / UploadLength, 2).ToString();
+        }
+    }
+
+    public enum MultipleUploadFileEvent
+    {
+        Error,
+        Suc,
+        Processing
+    }
+
+    /// <summary>
+    /// 多文件上传
+    /// </summary>
+    public class MultipleUploadFileInfo
+    {
+        public List<string> RemoteKeys = new List<string>();//用来获取下一个需要上传的remotekey
+        public List<string> LocalFiles = new List<string>();//用来获取下一个需要上传的localfile
+
+        public List<string> TotalFiles = new List<string>();//所有需要上传的文件
+        public List<string> UploadedFiles = new List<string>();//已经上传成功的文件
+        public List<string> ErrorFiles = new List<string>();//上传失败的文件
+
+        public UploadFileInfo UploadFileInfo;
+        public MultipleUploadFileEvent Event;
+
+        public long SucUploadSize = 0;//已经上传成功的文件的总大小
+        public long TotalSize =0;//总上传的大小，单位字节
+        public long UploadedSize=0;//当前已经上传的大小，单位字节
+
+        public string GetSizeProcess()
+        {
+            return Math.Round(100f * UploadedSize / TotalSize, 2).ToString() ;
+        }
+
+        public string GetFileCountProcess()
+        {
+            var f1 = 1f * UploadedFiles.Count;
+            var f2 = 1f * TotalFiles.Count;
+            var process =  f1 / f2;
+            return Math.Round(100*process ,2).ToString();
+        }
+    }
+
+
+
+    public class Oss : SingletonBehaviour<Oss>
+    {
+
+        protected override void Awake()
+        {
+            base.Awake();
+            _multipleUploadFileInfo.UploadFileInfo = _uploadFileInfo;
+        }
+
+        public delegate void UploadFileCallback(UploadFileInfo info);
+        public delegate void MultipleUploadFileCallback(MultipleUploadFileInfo info);
+
+        /// <summary>
+        /// 单文件上传的回调和参数
+        /// </summary>
+        UploadFileCallback _onUploadFileCallback;
+        UploadFileInfo _uploadFileInfo = new UploadFileInfo();
+
+        /// <summary>
+        /// 多文件上传的回调和参数
+        /// </summary>
+        MultipleUploadFileCallback _onMultipleUploadFileCallback;
+        MultipleUploadFileInfo _multipleUploadFileInfo = new MultipleUploadFileInfo();
+
+        private string _accessKeyId = "";
+        private string _accessKeySecret = "";
+        private string _endpoint = "";
+        private string _bucket = "";
+
+
+        string Host
+        {
+            get
+            {
+                return string.Format("{0}.{1}", _bucket, _endpoint);
+            }
+        }
+
+        public Oss ConfigAccessKeyId(string accessKeyId)
+        {
+            _accessKeyId = accessKeyId;
+            return this;
+        }
+
+        public Oss ConfigAccessKeySecret(string accessKeySecret)
+        {
+            _accessKeySecret = accessKeySecret;
+            return this;
+        }
+
+        public Oss ConfigEndpoint(string endpoint)
+        {
+            _endpoint = endpoint;
+            return this;
+        }
+
+        public Oss ConfigBucket(string bucket)
+        {
+            _bucket = bucket;
+            return this;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="remoteKey">相对于bucket的路径</param>
+        /// <returns></returns>
+        public bool DoesObjectExist(string remoteKey)
+        {
+            return false;
+        }
+
+        /// <summary>
+        /// 得到路径下文件的大小字节
+        /// </summary>
+        /// <param name="path"></param>
+        /// <returns></returns>
+        private long GetFileSize(string path)
+        {
+            FileInfo fileInfo = new FileInfo(path);
+            return fileInfo.Length;
+        }
+
+        public void MultipleUploadFiles(List<string> localFiles, List<string> remoteKeys, MultipleUploadFileCallback callback)
+        {
+            long totalSize = 0;
+            localFiles.ForEach(file => totalSize += GetFileSize(file));
+            Debug.Log("上传总大小为" + totalSize);
+            _onMultipleUploadFileCallback = callback;
+            _multipleUploadFileInfo.TotalSize = totalSize;
+            _multipleUploadFileInfo.TotalFiles .AddRange( localFiles);
+            _multipleUploadFileInfo.RemoteKeys = remoteKeys;
+            _multipleUploadFileInfo.LocalFiles .AddRange( localFiles);
+            if (localFiles.Count != remoteKeys.Count) { Debug.LogError("上传的文件和remotekey个数不一致"); return;  }
+            if (localFiles.Count < 1) { Debug.LogError("上传文件列表为空"); return; }
+            UploadSingleFile();
+        }
+
+        void UploadSingleFile()
+        {
+
+            if (_multipleUploadFileInfo.LocalFiles.Count == 0)
+            {
+                //所有文件都执行过上传，判断是否有失败的文件以更新事件
+                if (_multipleUploadFileInfo.ErrorFiles.Count > 0)
+                {
+                    //存在上传失败的文件
+                    _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Processing;
+                    CallMultipleUploadFileCallback();
+                    _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Error;
+                    CallMultipleUploadFileCallback();
+                }
+                else
+                {
+                    //不存在失败的文件，说明所有文件都上传成功
+                    _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Processing;
+                    CallMultipleUploadFileCallback();
+                    _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Suc;
+                    CallMultipleUploadFileCallback();
+                }
+
+                return;
+            }
+
+            string localFile = _multipleUploadFileInfo.LocalFiles[0];
+            string remoteKey = _multipleUploadFileInfo.RemoteKeys[0];
+            _multipleUploadFileInfo.LocalFiles.RemoveAt(0);
+            _multipleUploadFileInfo.RemoteKeys.RemoveAt(0);
+
+           
+
+            UploadFileCallback callback = (info) => {
+                switch (info.Event)
+                {
+                    case UploadFileEvent.Error:
+                        _multipleUploadFileInfo.ErrorFiles.Add(_uploadFileInfo.File);
+                        UploadSingleFile();
+                        break;
+                    case UploadFileEvent.Suc:
+                        _multipleUploadFileInfo.UploadedFiles.Add(_uploadFileInfo.File);
+                        _multipleUploadFileInfo.SucUploadSize += GetFileSize(_uploadFileInfo.File);
+                        _multipleUploadFileInfo.UploadedSize = _multipleUploadFileInfo.SucUploadSize;
+                        _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Processing;
+                        CallMultipleUploadFileCallback();
+                        UploadSingleFile();
+                        break;
+                    case UploadFileEvent.Processing:
+                        _multipleUploadFileInfo.Event = MultipleUploadFileEvent.Processing;
+                        _multipleUploadFileInfo.UploadedSize =
+                        _multipleUploadFileInfo.SucUploadSize + _uploadFileInfo.Uploaded;
+                        CallMultipleUploadFileCallback();
+                        break;
+                    default:
+                        break;
+                }
+            };
+            UploadFile(localFile, remoteKey, callback);
+        }
+
+
+        public void UploadFile(string localFile, string remoteKey, UploadFileCallback callback)
+        {
+            _onUploadFileCallback = callback;
+            StartCoroutine(UploadFile(localFile, remoteKey));
+        }
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="localFile">本地文件路径</param>
+        /// <param name="remoteKey">远程相对buket的路径，前后不需要加'/'，也不需要加文件名</param>
+        /// <returns></returns>
+        IEnumerator UploadFile(string localFile, string remoteKey)
+        {
+            //请求的url是http://sunhouse.oss-cn-hangzhou.aliyuncs.com/wfq/game.obj则remotekey为wfq
+            //请求的url是http://sunhouse.oss-cn-hangzhou.aliyuncs.com/wfq/sub/game.obj则remotekey为wfq/sub
+            WWW file = new WWW("file:///" + localFile);
+            yield return file;
+
+            _uploadFileInfo.File = localFile;
+            _uploadFileInfo.RemoteKey = remoteKey;
+            _uploadFileInfo.DownLoadUrl = string.Format("http://{0}/{1}/{2}", Host, remoteKey, Path.GetFileName(localFile));
+            Debug.Log(_uploadFileInfo.DownLoadUrl);
+
+            var fileName = Path.GetFileName(localFile);
+
+            string bucketFilePath = "/" + remoteKey + "/" + fileName;
+            string url = "http://" + Host + bucketFilePath;
+
+            string utcGMT = DateTime.UtcNow.ToString("r");
+
+            var contentMD5 = ToMD5(localFile);
+
+            var canonicalizedResource = "/" + _bucket + bucketFilePath;
+
+            //获取授权
+            string authorization = Authorization(contentMD5, canonicalizedResource, utcGMT);
+
+            var request = new HTTPRequest(new Uri(url), HTTPMethods.Put, OnRequestFinished);
+
+
+            request.AddHeader("Authorization", authorization);
+            request.AddHeader("Content-Length", file.bytes.Length.ToString());
+            request.AddHeader("Content-Encoding", "utf-8");
+            request.AddHeader("Content-Md5", contentMD5);
+            request.AddHeader("Content-Disposition", "attachment;filename=" + fileName);
+            request.AddHeader("Date", utcGMT);
+            request.AddHeader("Content-Type", "application/x-www-form-urlencoded");
+            request.AddHeader("Host", Host);
+
+            request.Timeout = TimeSpan.FromSeconds(5);
+
+            request.UploadStream = new FileStream(localFile, FileMode.Open);
+
+            request.OnUploadProgress = OnUploadProgress;
+
+            request.Send();
+
+        }
+
+        private void OnUploadProgress(HTTPRequest originalRequest, long uploaded, long uploadLength)
+        {
+            _uploadFileInfo.Event = UploadFileEvent.Processing;
+            _uploadFileInfo.OriginalRequest = originalRequest;
+            _uploadFileInfo.Uploaded = uploaded;
+            _uploadFileInfo.UploadLength = uploadLength;
+
+            CallUploadFileCallback();
+        }
+
+        private void OnRequestFinished(HTTPRequest originalRequest, HTTPResponse response)
+        {
+            if (originalRequest.State == HTTPRequestStates.Finished)
+            {
+                //请求得到返回
+                if (response.IsSuccess)
+                {
+                    //得到正确的响应，说明上传成功了
+                    _uploadFileInfo.Event = UploadFileEvent.Suc;
+                    CallUploadFileCallback();
+                }
+                else
+                {
+                    _uploadFileInfo.Event = UploadFileEvent.Error;
+                    _uploadFileInfo.ErrorMsg = response.DataAsText;
+                    CallUploadFileCallback();
+                }
+            }
+            else
+            {
+                //失败
+                _uploadFileInfo.Event = UploadFileEvent.Error;
+                _uploadFileInfo.ErrorMsg = response == null ? "没有返回" : response.DataAsText;
+                _uploadFileInfo.Error = originalRequest.Exception;
+                CallUploadFileCallback();
+            }
+
+
+        }
+
+        void CallUploadFileCallback()
+        {
+            if (_onUploadFileCallback == null)
+            {
+                Debug.LogError("单文件上传的回调函数为空");
+                return;
+            }
+            if (_uploadFileInfo == null)
+            {
+                Debug.LogError("单文件上传的参数为空");
+                return;
+            }
+            _onUploadFileCallback(_uploadFileInfo);
+        }
+
+        void CallMultipleUploadFileCallback()
+        {
+            if (_onMultipleUploadFileCallback == null)
+            {
+                Debug.LogError("单文件上传的回调函数为空");
+                return;
+            }
+            if (_multipleUploadFileInfo == null)
+            {
+                Debug.LogError("单文件上传的参数为空");
+                return;
+            }
+            _onMultipleUploadFileCallback(_multipleUploadFileInfo);
+        }
+
+
+        public string Authorization(string contentMD5, string canonicalizedResource, string UtcGMT)
+        {
+            var data = OssSignature.BuildInfo.BuildPutObjectCanonicalString(contentMD5, canonicalizedResource, UtcGMT);
+            Debug.Log(data);
+            var signature = OssSignature.Signature(_accessKeySecret, data);
+            return string.Format("OSS {0}:{1}", _accessKeyId, signature);
+        }
+
+        private string ToMD5(string filePath)
+        {
+            FileStream file = new FileStream(filePath, FileMode.Open);
+            MD5 md5 = new MD5CryptoServiceProvider();
+            byte[] hashBytes = md5.ComputeHash(file);
+            file.Close();
+            string result = Convert.ToBase64String(hashBytes);
+
+            return result;
+        }
+    }
+}
