@@ -1,0 +1,83 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using UnityEngine;
+
+namespace Assets.House.Scripts.Utils.AliyunOss
+{
+    /// <summary>
+    /// 用于签名
+    /// </summary>
+    public class OssSignature
+    {
+        public class BuildInfo
+        {
+            public string Method;
+            public string ContentMD5;
+            public string ContentType;
+            public string UtcGMT;
+            
+            public string CanonicalizedOSSHeaders;
+            public string CanonicalizedResource;
+
+            const string NewLine = "\n";
+
+            string AppendLine(string value) { return value + NewLine; }
+
+            //Authorization = "OSS " + AccessKeyId + ":" + Signature
+            //Signature = base64(hmac - sha1(AccessKeySecret,
+            //VERB + "\n"
+            //+ Content - MD5 + "\n"
+            //+ Content - Type + "\n"
+            //+ Date + "\n"
+            //+ CanonicalizedOSSHeaders
+            //+ CanonicalizedResource))
+            public string BuildCanonicalString()
+            {
+                return AppendLine(Method) + AppendLine(ContentMD5) + AppendLine(ContentType)
+                    + AppendLine(UtcGMT) + CanonicalizedOSSHeaders + CanonicalizedResource;
+            }
+
+            /// <summary>
+            /// 构造putobje请求的签名字符串
+            /// </summary>
+            /// <param name="contentMD5">表示请求内容数据的MD5值，对消息内容（不包括头部）计算MD5值获得128比特位数字，
+            /// 对该数字进行base64编码而得到。该请求头可用于消息合法性的检查（消息内容是否与发送时一致），
+            /// 如”eB5eJF1ptWaXm4bijSPyxw==”，也可以为空。详情请参见RFC2616 Content-MD5。</param>
+            /// <param name="canonicalizedResource">上传的远程路径
+            /// 格式为 /bucket/wfq/test.obj
+            /// 其中bucket为你的自己的bucket后面的路径就是在该bucket下的路径
+            /// </param>
+            /// <returns></returns>
+            public static string BuildPutObjectCanonicalString(string contentMD5, string canonicalizedResource,string UtcGMT)
+            {
+                BuildInfo info = new BuildInfo()
+                {
+                    Method = "PUT",
+                    ContentMD5 = contentMD5,
+                    ContentType = "application/x-www-form-urlencoded",
+                    CanonicalizedOSSHeaders = "",
+                    CanonicalizedResource = canonicalizedResource,
+                    UtcGMT = UtcGMT
+                };
+
+                return info.BuildCanonicalString();
+            }
+
+        }
+
+        public static string Signature(string accessKeySecret, string data)
+        {
+            using (var algorithm = new HMACSHA1())
+            {
+                algorithm.Key = Encoding.UTF8.GetBytes(accessKeySecret.ToCharArray());
+                string signature = Convert.ToBase64String(
+                    algorithm.ComputeHash(Encoding.UTF8.GetBytes(data.ToCharArray())));
+                Debug.Log(signature);
+                return signature;
+            }
+        }
+    }
+}
